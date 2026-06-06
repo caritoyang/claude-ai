@@ -116,37 +116,53 @@ function runNow() {
 
     const price = currentPrice;
 
-    const isGreen =
-      (price > pmh && price > pdh) ||
-      (price >= pdh - NEAR_THRESHOLD) ||
-      (price >= pmh - NEAR_THRESHOLD);
+    // Verde: precio mayor a PDH y PMH
+    const isGreen = price > pdh && price > pmh;
 
-    const isRed =
-      (price < pml && price < pdl) ||
-      (price <= pdl + NEAR_THRESHOLD) ||
-      (price <= pml + NEAR_THRESHOLD);
+    // Verde agua: precio por debajo de PDH pero dentro de $5
+    const isAqua = !isGreen && price >= pdh - NEAR_THRESHOLD && price <= pdh;
 
-    if (isGreen && !isRed) {
+    // Rojo: precio menor a PDL y PML
+    const isRed = price < pdl && price < pml;
+
+    // Naranja: precio por encima de PML pero dentro de $5
+    const isOrange = !isRed && price <= pml + NEAR_THRESHOLD && price >= pml;
+
+    if (isGreen) {
       arrowCell
         .setValue("▲")
         .setFontColor("#00C853")
         .setFontSize(16)
         .setHorizontalAlignment("center")
         .setBackground("#E8F5E9");
-    } else if (isRed && !isGreen) {
+    } else if (isAqua) {
+      arrowCell
+        .setValue("▲")
+        .setFontColor("#00BCD4")
+        .setFontSize(16)
+        .setHorizontalAlignment("center")
+        .setBackground("#E0F7FA");
+    } else if (isRed) {
       arrowCell
         .setValue("▼")
         .setFontColor("#D50000")
         .setFontSize(16)
         .setHorizontalAlignment("center")
         .setBackground("#FFEBEE");
-    } else {
+    } else if (isOrange) {
       arrowCell
-        .setValue("—")
+        .setValue("▼")
         .setFontColor("#FF6F00")
         .setFontSize(16)
         .setHorizontalAlignment("center")
-        .setBackground("#FFF8E1");
+        .setBackground("#FFF3E0");
+    } else {
+      arrowCell
+        .setValue("—")
+        .setFontColor("#9E9E9E")
+        .setFontSize(16)
+        .setHorizontalAlignment("center")
+        .setBackground(null);
     }
 
     Utilities.sleep(500);
