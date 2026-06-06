@@ -81,10 +81,10 @@ function fetchYahooData(ticker) {
   }
 }
 
-// ── 9:30 AM trigger — populate PDH, PDL, PMH, PML ───────────
-function run930() {
-  const ss    = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(SHEET_NAME);
+// ── Run — fetch current data and evaluate signals ─────────────
+function runNow() {
+  const ss      = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet   = ss.getSheetByName(SHEET_NAME);
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
 
@@ -97,49 +97,24 @@ function run930() {
     const data = fetchYahooData(ticker);
     if (!data) return;
 
-    const sheetRow = i + 2;
-    sheet.getRange(sheetRow, COL_PDH).setValue(data.pdh !== null ? data.pdh : "N/A");
-    sheet.getRange(sheetRow, COL_PDL).setValue(data.pdl !== null ? data.pdl : "N/A");
-    sheet.getRange(sheetRow, COL_PMH).setValue(data.pmh !== null ? data.pmh : "N/A");
-    sheet.getRange(sheetRow, COL_PML).setValue(data.pml !== null ? data.pml : "N/A");
+    const sheetRow  = i + 2;
+    const { pdh, pdl, pmh, pml, currentPrice } = data;
 
-    // Clear previous arrow
+    // Populate level columns
+    sheet.getRange(sheetRow, COL_PDH).setValue(pdh !== null ? pdh : "N/A");
+    sheet.getRange(sheetRow, COL_PDL).setValue(pdl !== null ? pdl : "N/A");
+    sheet.getRange(sheetRow, COL_PMH).setValue(pmh !== null ? pmh : "N/A");
+    sheet.getRange(sheetRow, COL_PML).setValue(pml !== null ? pml : "N/A");
+
+    // Evaluate signal
     const arrowCell = sheet.getRange(sheetRow, COL_ARROW);
-    arrowCell.setValue("").setBackground(null).setFontColor(null);
 
-    Utilities.sleep(500); // avoid rate limiting
-  });
+    if (currentPrice === null || isNaN(pdh) || isNaN(pdl) || isNaN(pmh) || isNaN(pml)) {
+      arrowCell.setValue("?").setFontColor("#9E9E9E").setBackground(null);
+      return;
+    }
 
-  ss.toast("9:30 data loaded ✓", "Market Tracker", 5);
-}
-
-// ── 9:31 AM trigger — evaluate signal arrows ─────────────────
-function run931() {
-  const ss    = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(SHEET_NAME);
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
-
-  const data = sheet.getRange(2, 1, lastRow - 1, COL_PML).getValues();
-
-  data.forEach((row, i) => {
-    const ticker = row[COL_TICKER - 1].toString().trim().toUpperCase();
-    if (!ticker) return;
-
-    const pdh = parseFloat(row[COL_PDH - 1]);
-    const pdl = parseFloat(row[COL_PDL - 1]);
-    const pmh = parseFloat(row[COL_PMH - 1]);
-    const pml = parseFloat(row[COL_PML - 1]);
-
-    if (isNaN(pdh) || isNaN(pdl) || isNaN(pmh) || isNaN(pml)) return;
-
-    // Fetch fresh price at 9:31
-    const fresh = fetchYahooData(ticker);
-    if (!fresh || fresh.currentPrice === null) return;
-
-    const price = fresh.currentPrice;
-    const sheetRow = i + 2;
-    const arrowCell = sheet.getRange(sheetRow, COL_ARROW);
+    const price = currentPrice;
 
     const isGreen =
       (price > pmh && price > pdh) ||
@@ -166,7 +141,6 @@ function run931() {
         .setHorizontalAlignment("center")
         .setBackground("#FFEBEE");
     } else {
-      // Ambiguous — price near both levels
       arrowCell
         .setValue("—")
         .setFontColor("#FF6F00")
@@ -178,46 +152,24 @@ function run931() {
     Utilities.sleep(500);
   });
 
-  ss.toast("9:31 signals updated ✓", "Market Tracker", 5);
+  ss.toast("Actualizado ✓", "Market Tracker", 5);
 }
 
-// ── Install time-based triggers ──────────────────────────────
+// ── Install time-based trigger ────────────────────────────────
 function installTriggers() {
-  // Remove existing triggers for these functions to avoid duplicates
   ScriptApp.getProjectTriggers().forEach(t => {
-    if (["run930", "run931"].includes(t.getHandlerFunction())) {
-      ScriptApp.deleteTrigger(t);
-    }
+    if (t.getHandlerFunction() === "runNow") ScriptApp.deleteTrigger(t);
   });
 
-  // 9:30 AM ET — runs Mon-Fri, fires between 9:30-9:31
-  ScriptApp.newTrigger("run930")
-    .timeBased()
-    .atHour(9)
-    .nearMinute(30)
-    .everyWeeks(1)
-    .onWeekDay(ScriptApp.WeekDay.MONDAY)
-    .inTimezone("America/New_York")
-    .create();
-
-  // Repeat for Tue-Fri
-  [ScriptApp.WeekDay.TUESDAY, ScriptApp.WeekDay.WEDNESDAY,
+  [ScriptApp.WeekDay.MONDAY, ScriptApp.WeekDay.TUESDAY, ScriptApp.WeekDay.WEDNESDAY,
    ScriptApp.WeekDay.THURSDAY, ScriptApp.WeekDay.FRIDAY].forEach(day => {
-    ScriptApp.newTrigger("run930")
-      .timeBased().atHour(9).nearMinute(30).everyWeeks(1)
-      .onWeekDay(day).inTimezone("America/New_York").create();
-
-    ScriptApp.newTrigger("run931")
+    ScriptApp.newTrigger("runNow")
       .timeBased().atHour(9).nearMinute(31).everyWeeks(1)
       .onWeekDay(day).inTimezone("America/New_York").create();
   });
 
-  ScriptApp.newTrigger("run931")
-    .timeBased().atHour(9).nearMinute(31).everyWeeks(1)
-    .onWeekDay(ScriptApp.WeekDay.MONDAY).inTimezone("America/New_York").create();
-
   SpreadsheetApp.getActiveSpreadsheet()
-    .toast("Triggers installed for Mon-Fri 9:30 & 9:31 ET ✓", "Market Tracker", 8);
+    .toast("Trigger instalado: Lun-Vie 9:31 ET ✓", "Market Tracker", 8);
 }
 
 // ── Menu ─────────────────────────────────────────────────────
@@ -225,9 +177,8 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("📈 Market Tracker")
     .addItem("1. Setup headers", "setupHeaders")
-    .addItem("2. Install triggers (9:30 & 9:31 ET)", "installTriggers")
+    .addItem("2. Install trigger (9:31 ET, Lun-Vie)", "installTriggers")
     .addSeparator()
-    .addItem("▶ Run 9:30 now (manual test)", "run930")
-    .addItem("▶ Run 9:31 now (manual test)", "run931")
+    .addItem("▶ Run", "runNow")
     .addToUi();
 }
