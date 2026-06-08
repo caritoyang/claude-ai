@@ -145,33 +145,15 @@ function runNow() {
 
     Logger.log(`${ticker}: pdh=${pdh} pdl=${pdl} pmh=${pmh} pml=${pml} price=${price}`);
 
-    // PMH/PML son opcionales: si no están ingresados, solo se usa PDH/PDL
-    const hasPM = !isNaN(pmh) && !isNaN(pml);
-
-    // Verde: precio mayor a PDH (y PMH si está disponible)
-    const isGreen = hasPM ? (price > pdh && price > pmh) : (price > pdh);
-
-    // Verde agua: precio dentro de $5 por debajo de PDH
-    const isAqua = !isGreen && price >= pdh - NEAR_THRESHOLD && price < pdh;
-
-    // Rojo: precio menor a PDL (y PML si está disponible)
-    const isRed = hasPM ? (price < pdl && price < pml) : (price < pdl);
-
-    // Naranja: precio dentro de $5 por encima de PML (solo si PML ingresado)
-    const isOrange = hasPM && !isRed && price <= pml + NEAR_THRESHOLD && price >= pml;
+    const isGreen = !isNaN(pmh) ? (price > pdh && price > pmh) : (price > pdh);
+    const isRed   = !isNaN(pml) ? (price < pdl && price < pml) : (price < pdl);
 
     if (isGreen) {
       arrowCell.setValue("▲").setFontColor("#00C853").setFontSize(16)
                .setHorizontalAlignment("center").setBackground("#E8F5E9");
-    } else if (isAqua) {
-      arrowCell.setValue("▲").setFontColor("#00BCD4").setFontSize(16)
-               .setHorizontalAlignment("center").setBackground("#E0F7FA");
     } else if (isRed) {
       arrowCell.setValue("▼").setFontColor("#D50000").setFontSize(16)
                .setHorizontalAlignment("center").setBackground("#FFEBEE");
-    } else if (isOrange) {
-      arrowCell.setValue("▼").setFontColor("#FF6F00").setFontSize(16)
-               .setHorizontalAlignment("center").setBackground("#FFF3E0");
     } else {
       arrowCell.setValue("—").setFontColor("#9E9E9E").setFontSize(16)
                .setHorizontalAlignment("center").setBackground(null);
