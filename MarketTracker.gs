@@ -34,51 +34,86 @@ function setupHeaders() {
 
 // ── Fetch data from Yahoo Finance ────────────────────────────
 function fetchYahooData(ticker) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=5d&includePrePost=true`;
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json"
+  };
+
+  // Chart endpoint: daily candles with pre/post market, last 5 days
+  const chartUrl = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=5d&includePrePost=true`;
+  let chartResp, chartJson;
   try {
-    const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
-    const json = JSON.parse(response.getContentText());
-    const result = json.chart.result[0];
-    const meta   = result.meta;
-
-    // Previous day OHLC (index -2 from today, i.e. last completed session)
-    const timestamps = result.timestamp;
-    const quotes     = result.indicators.quote[0];
-    const today      = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    // Find the index of the last completed regular session (yesterday or last trading day)
-    let prevIdx = -1;
-    for (let i = timestamps.length - 1; i >= 0; i--) {
-      const d = new Date(timestamps[i] * 1000);
-      d.setHours(0, 0, 0, 0);
-      if (d < today) { prevIdx = i; break; }
+    chartResp = UrlFetchApp.fetch(chartUrl, { muteHttpExceptions: true, headers });
+    Logger.log(`[${ticker}] chart HTTP ${chartResp.getResponseCode()}`);
+    if (chartResp.getResponseCode() !== 200) {
+      Logger.log(`[${ticker}] chart body: ${chartResp.getContentText().substring(0, 300)}`);
+      return null;
     }
-
-    const pdh = prevIdx >= 0 ? quotes.high[prevIdx]  : null;
-    const pdl = prevIdx >= 0 ? quotes.low[prevIdx]   : null;
-
-    // Pre-market high/low from extended hours (preMarketPrice not in chart v8 directly)
-    // Use the summary detail endpoint for pre-market price snapshot
-    const summaryUrl = `https://query1.finance.yahoo.com/v11/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=summaryDetail,price`;
-    const summaryResp = UrlFetchApp.fetch(summaryUrl, { muteHttpExceptions: true });
-    const summaryJson = JSON.parse(summaryResp.getContentText());
-    const priceData   = summaryJson.quoteSummary.result[0].price;
-
-    // Yahoo provides pre-market high/low via the quoteType + price module
-    const pmh = priceData.preMarketHigh  ? priceData.preMarketHigh.raw  : null;
-    const pml = priceData.preMarketLow   ? priceData.preMarketLow.raw   : null;
-
-    // Current / pre-market price (best available at call time)
-    const currentPrice = priceData.preMarketPrice && priceData.preMarketPrice.raw
-      ? priceData.preMarketPrice.raw
-      : (priceData.regularMarketPrice ? priceData.regularMarketPrice.raw : null);
-
-    return { pdh, pdl, pmh, pml, currentPrice };
+    chartJson = JSON.parse(chartResp.getContentText());
   } catch (e) {
-    Logger.log(`Error fetching ${ticker}: ${e}`);
+    Logger.log(`[${ticker}] chart fetch error: ${e}`);
     return null;
   }
+
+  let result;
+  try {
+    result = chartJson.chart.result[0];
+  } catch (e) {
+    Logger.log(`[${ticker}] chart parse error: ${e} | body: ${chartResp.getContentText().substring(0, 300)}`);
+    return null;
+  }
+
+  // Previous completed session high/low
+  const timestamps = result.timestamp || [];
+  const quotes     = result.indicators.quote[0];
+  const today      = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  let prevIdx = -1;
+  for (let i = timestamps.length - 1; i >= 0; i--) {
+    const d = new Date(timestamps[i] * 1000);
+    d.setHours(0, 0, 0, 0);
+    if (d < today) { prevIdx = i; break; }
+  }
+
+  const pdh = prevIdx >= 0 ? quotes.high[prevIdx] : null;
+  const pdl = prevIdx >= 0 ? quotes.low[prevIdx]  : null;
+
+  // Current regular market price from chart meta (always present)
+  const meta         = result.meta;
+  const regularPrice = meta.regularMarketPrice || null;
+
+  // Pre-market data via quoteSummary
+  const summaryUrl = `https://query2.finance.yahoo.com/v11/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=price`;
+  let pmh = null, pml = null, prePrice = null;
+  try {
+    const summaryResp = UrlFetchApp.fetch(summaryUrl, { muteHttpExceptions: true, headers });
+    Logger.log(`[${ticker}] summary HTTP ${summaryResp.getResponseCode()}`);
+    if (summaryResp.getResponseCode() === 200) {
+      const summaryJson = JSON.parse(summaryResp.getContentText());
+      const pd = summaryJson.quoteSummary.result[0].price;
+      pmh      = pd.preMarketHigh  && pd.preMarketHigh.raw  ? pd.preMarketHigh.raw  : null;
+      pml      = pd.preMarketLow   && pd.preMarketLow.raw   ? pd.preMarketLow.raw   : null;
+      prePrice = pd.preMarketPrice && pd.preMarketPrice.raw ? pd.preMarketPrice.raw : null;
+      Logger.log(`[${ticker}] pmh=${pmh} pml=${pml} prePrice=${prePrice} regularPrice=${regularPrice}`);
+    }
+  } catch (e) {
+    Logger.log(`[${ticker}] summary error: ${e}`);
+  }
+
+  const currentPrice = prePrice || regularPrice;
+  return { pdh, pdl, pmh, pml, currentPrice };
+}
+
+// ── Quick test: logs raw data for the first ticker ────────────
+function debugFirstTicker() {
+  const sheet  = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  const ticker = sheet.getRange(2, COL_TICKER).getValue().toString().trim().toUpperCase();
+  if (!ticker) { Logger.log("No ticker in A2"); return; }
+  Logger.log(`Testing ticker: ${ticker}`);
+  const data = fetchYahooData(ticker);
+  Logger.log(`Result: ${JSON.stringify(data)}`);
+  SpreadsheetApp.getUi().alert(`${ticker}\n\nPDH: ${data?.pdh}\nPDL: ${data?.pdl}\nPMH: ${data?.pmh}\nPML: ${data?.pml}\nPrecio actual: ${data?.currentPrice}`);
 }
 
 // ── Run — fetch current data and evaluate signals ─────────────
@@ -95,7 +130,10 @@ function runNow() {
     if (!ticker) return;
 
     const data = fetchYahooData(ticker);
-    if (!data) return;
+    if (!data) {
+      sheet.getRange(sheetRow, COL_ARROW).setValue("ERR").setFontColor("#FF0000");
+      return;
+    }
 
     const sheetRow  = i + 2;
     const { pdh, pdl, pmh, pml, currentPrice } = data;
@@ -196,5 +234,6 @@ function onOpen() {
     .addItem("2. Install trigger (9:31 ET, Lun-Vie)", "installTriggers")
     .addSeparator()
     .addItem("▶ Run", "runNow")
+    .addItem("🔍 Debug primer ticker", "debugFirstTicker")
     .addToUi();
 }
