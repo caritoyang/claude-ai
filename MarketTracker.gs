@@ -85,6 +85,18 @@ function onEdit(e) {
   }
 }
 
+// ── Espera hasta que GOOGLEFINANCE resuelva en una celda ──────
+function waitForValue(sheet, row, col, maxWaitMs) {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    SpreadsheetApp.flush();
+    const val = parseFloat(sheet.getRange(row, col).getValue());
+    if (!isNaN(val) && val > 0) return val;
+    Utilities.sleep(1500);
+  }
+  return null;
+}
+
 // ── Run: lee valores actuales y evalúa señales ───────────────
 function runNow() {
   const ss      = SpreadsheetApp.getActiveSpreadsheet();
@@ -95,32 +107,43 @@ function runNow() {
     return;
   }
 
-  // Forzar recálculo antes de leer
-  SpreadsheetApp.flush();
-  Utilities.sleep(2000); // dar tiempo a GOOGLEFINANCE para resolver
+  // Asegurar que las fórmulas estén puestas en todas las filas con tickers
+  for (let row = 2; row <= lastRow; row++) {
+    const ticker = sheet.getRange(row, COL_TICKER).getValue().toString().trim();
+    if (ticker) setRowFormulas(sheet, row);
+  }
 
-  const data = sheet.getRange(2, 1, lastRow - 1, COL_PRICE).getValues();
+  ss.toast("Esperando datos de GOOGLEFINANCE…", "Market Tracker", 10);
+  SpreadsheetApp.flush();
+  Utilities.sleep(3000);
+
   let updated = 0;
 
-  data.forEach((row, i) => {
-    const ticker = row[COL_TICKER - 1].toString().trim().toUpperCase();
-    if (!ticker) return;
+  for (let i = 0; i <= lastRow - 2; i++) {
+    const sheetRow = i + 2;
+    const ticker   = sheet.getRange(sheetRow, COL_TICKER).getValue().toString().trim().toUpperCase();
+    if (!ticker) continue;
 
-    const pdh   = parseFloat(row[COL_PDH   - 1]);
-    const pdl   = parseFloat(row[COL_PDL   - 1]);
-    const pmh   = parseFloat(row[COL_PMH   - 1]);
-    const pml   = parseFloat(row[COL_PML   - 1]);
-    const price = parseFloat(row[COL_PRICE - 1]);
-
-    const sheetRow  = i + 2;
     const arrowCell = sheet.getRange(sheetRow, COL_ARROW);
+    arrowCell.setValue("⏳").setFontColor("#9E9E9E").setFontSize(14)
+             .setHorizontalAlignment("center").setBackground(null);
+    SpreadsheetApp.flush();
 
-    // Si faltan datos de GOOGLEFINANCE, esperar
-    if (isNaN(pdh) || isNaN(pdl) || isNaN(price)) {
-      arrowCell.setValue("⏳").setFontColor("#9E9E9E").setFontSize(14)
+    // Esperar hasta 12 segundos por cada valor de GOOGLEFINANCE
+    const pdh   = waitForValue(sheet, sheetRow, COL_PDH,   12000);
+    const pdl   = waitForValue(sheet, sheetRow, COL_PDL,   12000);
+    const price = waitForValue(sheet, sheetRow, COL_PRICE, 12000);
+    const pmh   = parseFloat(sheet.getRange(sheetRow, COL_PMH).getValue());
+    const pml   = parseFloat(sheet.getRange(sheetRow, COL_PML).getValue());
+
+    if (pdh === null || pdl === null || price === null) {
+      arrowCell.setValue("N/A").setFontColor("#F44336").setFontSize(12)
                .setHorizontalAlignment("center").setBackground(null);
-      return;
+      Logger.log(`${ticker}: GOOGLEFINANCE no resolvió — pdh=${pdh} pdl=${pdl} price=${price}`);
+      continue;
     }
+
+    Logger.log(`${ticker}: pdh=${pdh} pdl=${pdl} pmh=${pmh} pml=${pml} price=${price}`);
 
     // PMH/PML son opcionales: si no están ingresados, solo se usa PDH/PDL
     const hasPM = !isNaN(pmh) && !isNaN(pml);
@@ -155,7 +178,7 @@ function runNow() {
     }
 
     updated++;
-  });
+  }
 
   ss.toast(`${updated} ticker(s) actualizados ✓`, "Market Tracker", 5);
 }
