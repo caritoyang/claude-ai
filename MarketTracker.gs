@@ -177,33 +177,31 @@ function runNow() {
     return;
   }
 
-  // Asegurar fórmulas PDH/PDL
+  // ── PASADA 1: asegurar fórmulas PDH/PDL y limpiar señales ───
   for (let row = 2; row <= lastRow; row++) {
     const ticker = sheet.getRange(row, COL_TICKER).getValue().toString().trim();
-    if (ticker) setRowFormulas(sheet, row);
+    if (!ticker) continue;
+    setRowFormulas(sheet, row);
+    sheet.getRange(row, COL_ARROW).setValue("⏳").setFontColor("#9E9E9E")
+         .setFontSize(14).setHorizontalAlignment("center").setBackground(null);
   }
-
-  ss.toast("Cargando datos…", "Market Tracker", 60);
   SpreadsheetApp.flush();
-  Utilities.sleep(3000);
 
-  let updated = 0;
+  // ── PASADA 2: poblar C, D, E, F, G para todos los tickers ───
+  ss.toast("Paso 1/2 — Cargando PDH, PDL, PMH, PML, Price…", "Market Tracker", 60);
+
+  const rowData = []; // guarda { sheetRow, ticker, pdh, pdl, pmh, pml, price }
 
   for (let i = 0; i <= lastRow - 2; i++) {
     const sheetRow = i + 2;
     const ticker   = sheet.getRange(sheetRow, COL_TICKER).getValue().toString().trim().toUpperCase();
     if (!ticker) continue;
 
-    const arrowCell = sheet.getRange(sheetRow, COL_ARROW);
-    arrowCell.setValue("⏳").setFontColor("#9E9E9E").setFontSize(14)
-             .setHorizontalAlignment("center").setBackground(null);
-    SpreadsheetApp.flush();
-
-    // PDH/PDL desde GOOGLEFINANCE
+    // PDH/PDL: esperar que GOOGLEFINANCE resuelva
     const pdh = waitForValue(sheet, sheetRow, COL_PDH, 12000);
     const pdl = waitForValue(sheet, sheetRow, COL_PDL, 12000);
 
-    // PMH/PML desde Finnhub candles pre-market
+    // PMH/PML: Yahoo Finance pre-market candles
     const pm = fetchPreMarketLevels(ticker);
     if (pm) {
       sheet.getRange(sheetRow, COL_PMH).setValue(pm.pmh);
@@ -213,21 +211,31 @@ function runNow() {
       sheet.getRange(sheetRow, COL_PML).setValue("N/A");
     }
 
-    // Precio real-time desde Finnhub
+    // Price: Finnhub real-time
     const price = fetchFinnhubPrice(ticker);
     if (price !== null) {
       sheet.getRange(sheetRow, COL_PRICE).setValue(price);
     }
 
+    SpreadsheetApp.flush();
+    rowData.push({ sheetRow, ticker, pdh, pdl, pmh: pm ? pm.pmh : NaN, pml: pm ? pm.pml : NaN, price });
+    Utilities.sleep(300);
+  }
+
+  // ── PASADA 3: evaluar señales en columna B ───────────────────
+  ss.toast("Paso 2/2 — Evaluando señales…", "Market Tracker", 30);
+
+  let updated = 0;
+
+  rowData.forEach(({ sheetRow, ticker, pdh, pdl, pmh, pml, price }) => {
+    const arrowCell = sheet.getRange(sheetRow, COL_ARROW);
+
     if (pdh === null || pdl === null || price === null) {
       arrowCell.setValue("N/A").setFontColor("#F44336").setFontSize(12)
                .setHorizontalAlignment("center").setBackground(null);
       Logger.log(`${ticker}: sin datos — pdh=${pdh} pdl=${pdl} price=${price}`);
-      continue;
+      return;
     }
-
-    const pmh = pm ? pm.pmh : NaN;
-    const pml = pm ? pm.pml : NaN;
 
     Logger.log(`${ticker}: pdh=${pdh} pdl=${pdl} pmh=${pmh} pml=${pml} price=${price}`);
 
@@ -246,8 +254,7 @@ function runNow() {
     }
 
     updated++;
-    Utilities.sleep(300); // respetar límite de Finnhub (60 req/min)
-  }
+  });
 
   ss.toast(`${updated} ticker(s) actualizados ✓`, "Market Tracker", 5);
 }
