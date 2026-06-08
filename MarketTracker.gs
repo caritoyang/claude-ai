@@ -2,9 +2,9 @@
 // MARKET TRACKER - Google Apps Script
 // Columns: A=Ticker | B=Signal | C=PDH | D=PDL | E=PMH | F=PML | G=Price
 //
-// PDH, PDL  → GOOGLEFINANCE (día anterior, delay OK)
+// PDH, PDL  → GOOGLEFINANCE (día anterior)
+// PMH, PML  → Finnhub candles pre-market 4:00–9:30 AM ET (auto)
 // Price     → Finnhub real-time
-// PMH, PML  → ingreso manual cada mañana
 // ============================================================
 
 const SHEET_NAME     = "Tracker";
@@ -12,8 +12,8 @@ const COL_TICKER     = 1; // A
 const COL_ARROW      = 2; // B
 const COL_PDH        = 3; // C
 const COL_PDL        = 4; // D
-const COL_PMH        = 5; // E  ← manual
-const COL_PML        = 6; // F  ← manual
+const COL_PMH        = 5; // E  ← Finnhub auto
+const COL_PML        = 6; // F  ← Finnhub auto
 const COL_PRICE      = 7; // G  ← Finnhub real-time
 
 // ⚠️ Pegá tu API key de finnhub.io acá:
@@ -25,16 +25,52 @@ function fetchFinnhubPrice(ticker) {
   try {
     const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
     if (resp.getResponseCode() !== 200) {
-      Logger.log(`[${ticker}] Finnhub HTTP ${resp.getResponseCode()}: ${resp.getContentText().substring(0, 200)}`);
+      Logger.log(`[${ticker}] quote HTTP ${resp.getResponseCode()}`);
+      return null;
+    }
+    const data  = JSON.parse(resp.getContentText());
+    const price = data.c > 0 ? data.c : data.pc;
+    Logger.log(`[${ticker}] price=${price}`);
+    return price > 0 ? price : null;
+  } catch (e) {
+    Logger.log(`[${ticker}] quote error: ${e}`);
+    return null;
+  }
+}
+
+// ── PMH y PML desde velas de 1 min del pre-market ────────────
+function fetchPreMarketLevels(ticker) {
+  const now = new Date();
+
+  // Timestamp de medianoche ET del día actual
+  const etDateStr  = Utilities.formatDate(now, "America/New_York", "yyyy-MM-dd");
+  const offsetStr  = Utilities.formatDate(now, "America/New_York", "Z"); // ej: "-0400"
+  const sign       = offsetStr[0] === "-" ? -1 : 1;
+  const offsetMins = sign * (parseInt(offsetStr.slice(1, 3)) * 60 + parseInt(offsetStr.slice(3, 5)));
+  const etMidnight = new Date(etDateStr + "T00:00:00Z").getTime() - offsetMins * 60000;
+
+  // Pre-market: 4:00 AM a 9:29 AM ET
+  const from = Math.floor((etMidnight + 4 * 3600000) / 1000);
+  const to   = Math.floor((etMidnight + 9 * 3600000 + 29 * 60000) / 1000);
+
+  const url = `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(ticker)}&resolution=1&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`;
+  try {
+    const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (resp.getResponseCode() !== 200) {
+      Logger.log(`[${ticker}] candles HTTP ${resp.getResponseCode()}`);
       return null;
     }
     const data = JSON.parse(resp.getContentText());
-    // c = current price (0 si el mercado está cerrado, usar pc = previous close)
-    const price = data.c > 0 ? data.c : data.pc;
-    Logger.log(`[${ticker}] Finnhub price=${price}`);
-    return price > 0 ? price : null;
+    if (data.s !== "ok" || !data.h || data.h.length === 0) {
+      Logger.log(`[${ticker}] sin velas pre-market (s=${data.s})`);
+      return null;
+    }
+    const pmh = Math.max(...data.h);
+    const pml = Math.min(...data.l);
+    Logger.log(`[${ticker}] PMH=${pmh} PML=${pml} (${data.h.length} velas)`);
+    return { pmh, pml };
   } catch (e) {
-    Logger.log(`[${ticker}] Finnhub error: ${e}`);
+    Logger.log(`[${ticker}] candles error: ${e}`);
     return null;
   }
 }
@@ -48,12 +84,12 @@ function setRowFormulas(sheet, row) {
     .setFormula(`=IFERROR(INDEX(GOOGLEFINANCE(${a},"low",WORKDAY(TODAY(),-1)),2,2),"")`);
 }
 
-// ── Setup: encabezados + fórmulas para todos los tickers ─────
+// ── Setup: encabezados + fórmulas ────────────────────────────
 function setupHeaders() {
   const ss    = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME);
 
-  const headers = ["Ticker", "Signal", "PDH", "PDL", "PMH ✍", "PML ✍", "Price"];
+  const headers = ["Ticker", "Signal", "PDH", "PDL", "PMH", "PML", "Price"];
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   sheet.getRange(1, 1, 1, headers.length)
     .setBackground("#263238")
@@ -65,16 +101,10 @@ function setupHeaders() {
   sheet.setColumnWidth(COL_ARROW,  80);
   sheet.setColumnWidth(COL_PDH,    80);
   sheet.setColumnWidth(COL_PDL,    80);
-  sheet.setColumnWidth(COL_PMH,    90);
-  sheet.setColumnWidth(COL_PML,    90);
+  sheet.setColumnWidth(COL_PMH,    80);
+  sheet.setColumnWidth(COL_PML,    80);
   sheet.setColumnWidth(COL_PRICE,  80);
 
-  // Columnas manuales en amarillo
-  const lastRow = Math.max(sheet.getLastRow(), 10);
-  sheet.getRange(2, COL_PMH, lastRow - 1, 1).setBackground("#FFFDE7");
-  sheet.getRange(2, COL_PML, lastRow - 1, 1).setBackground("#FFFDE7");
-
-  // Fórmulas PDH/PDL para filas existentes
   const lastData = sheet.getLastRow();
   for (let row = 2; row <= lastData; row++) {
     const ticker = sheet.getRange(row, COL_TICKER).getValue().toString().trim();
@@ -96,10 +126,9 @@ function onEdit(e) {
   if (ticker) {
     setRowFormulas(sheet, row);
   } else {
-    sheet.getRange(row, COL_PDH).clearContent();
-    sheet.getRange(row, COL_PDL).clearContent();
-    sheet.getRange(row, COL_PRICE).clearContent();
-    sheet.getRange(row, COL_ARROW).clearContent().setBackground(null);
+    [COL_PDH, COL_PDL, COL_PMH, COL_PML, COL_PRICE, COL_ARROW].forEach(col => {
+      sheet.getRange(row, col).clearContent().setBackground(null);
+    });
   }
 }
 
@@ -115,14 +144,14 @@ function waitForValue(sheet, row, col, maxWaitMs) {
   return null;
 }
 
-// ── Run: obtiene precio real-time y evalúa señales ───────────
+// ── Run: trae todos los datos y evalúa señales ───────────────
 function runNow() {
   const ss      = SpreadsheetApp.getActiveSpreadsheet();
   const sheet   = ss.getSheetByName(SHEET_NAME);
   const lastRow = sheet.getLastRow();
 
   if (FINNHUB_API_KEY === "TU_API_KEY_ACÁ") {
-    SpreadsheetApp.getUi().alert("⚠️ Antes de continuar, pegá tu API key de Finnhub en la línea:\nconst FINNHUB_API_KEY = \"TU_API_KEY_ACÁ\"");
+    SpreadsheetApp.getUi().alert("⚠️ Pegá tu API key de Finnhub en la línea:\nconst FINNHUB_API_KEY = \"TU_API_KEY_ACÁ\"");
     return;
   }
 
@@ -131,13 +160,13 @@ function runNow() {
     return;
   }
 
-  // Asegurar fórmulas PDH/PDL en todas las filas
+  // Asegurar fórmulas PDH/PDL
   for (let row = 2; row <= lastRow; row++) {
     const ticker = sheet.getRange(row, COL_TICKER).getValue().toString().trim();
     if (ticker) setRowFormulas(sheet, row);
   }
 
-  ss.toast("Cargando datos…", "Market Tracker", 30);
+  ss.toast("Cargando datos…", "Market Tracker", 60);
   SpreadsheetApp.flush();
   Utilities.sleep(3000);
 
@@ -153,9 +182,19 @@ function runNow() {
              .setHorizontalAlignment("center").setBackground(null);
     SpreadsheetApp.flush();
 
-    // PDH/PDL desde GOOGLEFINANCE (delay no importa, son datos del día anterior)
+    // PDH/PDL desde GOOGLEFINANCE
     const pdh = waitForValue(sheet, sheetRow, COL_PDH, 12000);
     const pdl = waitForValue(sheet, sheetRow, COL_PDL, 12000);
+
+    // PMH/PML desde Finnhub candles pre-market
+    const pm = fetchPreMarketLevels(ticker);
+    if (pm) {
+      sheet.getRange(sheetRow, COL_PMH).setValue(pm.pmh);
+      sheet.getRange(sheetRow, COL_PML).setValue(pm.pml);
+    } else {
+      sheet.getRange(sheetRow, COL_PMH).setValue("N/A");
+      sheet.getRange(sheetRow, COL_PML).setValue("N/A");
+    }
 
     // Precio real-time desde Finnhub
     const price = fetchFinnhubPrice(ticker);
@@ -163,15 +202,15 @@ function runNow() {
       sheet.getRange(sheetRow, COL_PRICE).setValue(price);
     }
 
-    const pmh = parseFloat(sheet.getRange(sheetRow, COL_PMH).getValue());
-    const pml = parseFloat(sheet.getRange(sheetRow, COL_PML).getValue());
-
     if (pdh === null || pdl === null || price === null) {
       arrowCell.setValue("N/A").setFontColor("#F44336").setFontSize(12)
                .setHorizontalAlignment("center").setBackground(null);
       Logger.log(`${ticker}: sin datos — pdh=${pdh} pdl=${pdl} price=${price}`);
       continue;
     }
+
+    const pmh = pm ? pm.pmh : NaN;
+    const pml = pm ? pm.pml : NaN;
 
     Logger.log(`${ticker}: pdh=${pdh} pdl=${pdl} pmh=${pmh} pml=${pml} price=${price}`);
 
@@ -190,7 +229,7 @@ function runNow() {
     }
 
     updated++;
-    Utilities.sleep(200); // respetar límite de 60 req/min de Finnhub
+    Utilities.sleep(300); // respetar límite de Finnhub (60 req/min)
   }
 
   ss.toast(`${updated} ticker(s) actualizados ✓`, "Market Tracker", 5);
