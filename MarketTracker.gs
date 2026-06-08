@@ -17,7 +17,7 @@ const COL_PML        = 6; // F  ← Finnhub auto
 const COL_PRICE      = 7; // G  ← Finnhub real-time
 
 // ⚠️ Pegá tu API key de finnhub.io acá:
-const FINNHUB_API_KEY = "TU_API_KEY_ACÁ";
+const FINNHUB_API_KEY = "d8jhsl9r01qh6g3qd6pgd8jhsl9r01qh6g3qd6q0";
 
 // ── Precio real-time desde Finnhub ───────────────────────────
 function fetchFinnhubPrice(ticker) {
