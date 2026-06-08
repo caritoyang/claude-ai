@@ -116,6 +116,12 @@ function setupHeaders() {
   sheet.setColumnWidth(COL_PML,    80);
   sheet.setColumnWidth(COL_PRICE,  80);
 
+  // Formato numérico 2 decimales para columnas de precios
+  const lastRow = Math.max(sheet.getLastRow(), 50);
+  [COL_PDH, COL_PDL, COL_PMH, COL_PML, COL_PRICE].forEach(col => {
+    sheet.getRange(2, col, lastRow - 1, 1).setNumberFormat("0.00");
+  });
+
   const lastData = sheet.getLastRow();
   for (let row = 2; row <= lastData; row++) {
     const ticker = sheet.getRange(row, COL_TICKER).getValue().toString().trim();
