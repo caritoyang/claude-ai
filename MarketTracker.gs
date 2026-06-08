@@ -177,29 +177,31 @@ function runNow() {
     return;
   }
 
-  // ── PASADA 1: asegurar fórmulas PDH/PDL y limpiar señales ───
+  // ── PASADA 1: limpiar señales y asegurar fórmulas solo si la celda está vacía
   for (let row = 2; row <= lastRow; row++) {
     const ticker = sheet.getRange(row, COL_TICKER).getValue().toString().trim();
     if (!ticker) continue;
-    setRowFormulas(sheet, row);
+    // Solo setear fórmula si PDH/PDL están vacíos (evita forzar recálculo)
+    if (!sheet.getRange(row, COL_PDH).getValue()) setRowFormulas(sheet, row);
     sheet.getRange(row, COL_ARROW).setValue("⏳").setFontColor("#9E9E9E")
          .setFontSize(14).setHorizontalAlignment("center").setBackground(null);
   }
   SpreadsheetApp.flush();
+  Utilities.sleep(2000); // dar tiempo a GOOGLEFINANCE solo si hubo fórmulas nuevas
 
-  // ── PASADA 2: poblar C, D, E, F, G para todos los tickers ───
-  ss.toast("Paso 1/2 — Cargando PDH, PDL, PMH, PML, Price…", "Market Tracker", 60);
+  // ── PASADA 2: poblar E, F, G y leer C, D para todos los tickers ─
+  ss.toast("Paso 1/2 — Cargando PMH, PML, Price…", "Market Tracker", 60);
 
-  const rowData = []; // guarda { sheetRow, ticker, pdh, pdl, pmh, pml, price }
+  const rowData = [];
 
   for (let i = 0; i <= lastRow - 2; i++) {
     const sheetRow = i + 2;
     const ticker   = sheet.getRange(sheetRow, COL_TICKER).getValue().toString().trim().toUpperCase();
     if (!ticker) continue;
 
-    // PDH/PDL: esperar que GOOGLEFINANCE resuelva
-    const pdh = waitForValue(sheet, sheetRow, COL_PDH, 12000);
-    const pdl = waitForValue(sheet, sheetRow, COL_PDL, 12000);
+    // PDH/PDL: leer directo (ya deberían tener valor); esperar solo si siguen vacíos
+    const pdh = waitForValue(sheet, sheetRow, COL_PDH, 8000);
+    const pdl = waitForValue(sheet, sheetRow, COL_PDL, 8000);
 
     // PMH/PML: Yahoo Finance pre-market candles
     const pm = fetchPreMarketLevels(ticker);
