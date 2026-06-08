@@ -2,8 +2,9 @@
 // MARKET TRACKER - Google Apps Script
 // Columns: A=Ticker | B=Signal | C=PDH | D=PDL | E=PMH | F=PML | G=Price
 //
-// PDH, PDL, Price → fórmulas GOOGLEFINANCE (automáticas)
-// PMH, PML        → ingreso manual cada mañana
+// PDH, PDL  → GOOGLEFINANCE (día anterior, delay OK)
+// Price     → Finnhub real-time
+// PMH, PML  → ingreso manual cada mañana
 // ============================================================
 
 const SHEET_NAME     = "Tracker";
@@ -13,19 +14,38 @@ const COL_PDH        = 3; // C
 const COL_PDL        = 4; // D
 const COL_PMH        = 5; // E  ← manual
 const COL_PML        = 6; // F  ← manual
-const COL_PRICE      = 7; // G  (fórmula, puede ocultarse)
+const COL_PRICE      = 7; // G  ← Finnhub real-time
 
-const NEAR_THRESHOLD = 5;
+// ⚠️ Pegá tu API key de finnhub.io acá:
+const FINNHUB_API_KEY = "TU_API_KEY_ACÁ";
 
-// ── Fórmulas GOOGLEFINANCE para una fila ─────────────────────
+// ── Precio real-time desde Finnhub ───────────────────────────
+function fetchFinnhubPrice(ticker) {
+  const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(ticker)}&token=${FINNHUB_API_KEY}`;
+  try {
+    const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (resp.getResponseCode() !== 200) {
+      Logger.log(`[${ticker}] Finnhub HTTP ${resp.getResponseCode()}: ${resp.getContentText().substring(0, 200)}`);
+      return null;
+    }
+    const data = JSON.parse(resp.getContentText());
+    // c = current price (0 si el mercado está cerrado, usar pc = previous close)
+    const price = data.c > 0 ? data.c : data.pc;
+    Logger.log(`[${ticker}] Finnhub price=${price}`);
+    return price > 0 ? price : null;
+  } catch (e) {
+    Logger.log(`[${ticker}] Finnhub error: ${e}`);
+    return null;
+  }
+}
+
+// ── Fórmulas GOOGLEFINANCE para PDH y PDL (día anterior) ─────
 function setRowFormulas(sheet, row) {
   const a = `A${row}`;
   sheet.getRange(row, COL_PDH)
     .setFormula(`=IFERROR(INDEX(GOOGLEFINANCE(${a},"high",WORKDAY(TODAY(),-1)),2,2),"")`);
   sheet.getRange(row, COL_PDL)
     .setFormula(`=IFERROR(INDEX(GOOGLEFINANCE(${a},"low",WORKDAY(TODAY(),-1)),2,2),"")`);
-  sheet.getRange(row, COL_PRICE)
-    .setFormula(`=IFERROR(GOOGLEFINANCE(${a},"price"),"")`);
 }
 
 // ── Setup: encabezados + fórmulas para todos los tickers ─────
@@ -33,10 +53,6 @@ function setupHeaders() {
   const ss    = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME);
 
-  // Forzar recálculo cada minuto para que GOOGLEFINANCE se actualice solo
-  ss.setRecalculation(SpreadsheetApp.RecalculationInterval.MINUTE);
-
-  // Encabezados
   const headers = ["Ticker", "Signal", "PDH", "PDL", "PMH ✍", "PML ✍", "Price"];
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   sheet.getRange(1, 1, 1, headers.length)
@@ -45,7 +61,6 @@ function setupHeaders() {
     .setFontWeight("bold")
     .setHorizontalAlignment("center");
 
-  // Anchos de columna
   sheet.setColumnWidth(COL_TICKER, 90);
   sheet.setColumnWidth(COL_ARROW,  80);
   sheet.setColumnWidth(COL_PDH,    80);
@@ -54,22 +69,22 @@ function setupHeaders() {
   sheet.setColumnWidth(COL_PML,    90);
   sheet.setColumnWidth(COL_PRICE,  80);
 
-  // Resaltar columnas manuales (PMH/PML) en amarillo claro
+  // Columnas manuales en amarillo
   const lastRow = Math.max(sheet.getLastRow(), 10);
   sheet.getRange(2, COL_PMH, lastRow - 1, 1).setBackground("#FFFDE7");
   sheet.getRange(2, COL_PML, lastRow - 1, 1).setBackground("#FFFDE7");
 
-  // Poner fórmulas en las filas que ya tienen tickers
+  // Fórmulas PDH/PDL para filas existentes
   const lastData = sheet.getLastRow();
   for (let row = 2; row <= lastData; row++) {
     const ticker = sheet.getRange(row, COL_TICKER).getValue().toString().trim();
     if (ticker) setRowFormulas(sheet, row);
   }
 
-  SpreadsheetApp.getActiveSpreadsheet().toast("Setup completo ✓", "Market Tracker", 4);
+  ss.toast("Setup completo ✓", "Market Tracker", 4);
 }
 
-// ── onEdit: agrega fórmulas automáticamente al escribir ticker
+// ── onEdit: agrega fórmulas PDH/PDL al escribir un ticker ────
 function onEdit(e) {
   const sheet = e.range.getSheet();
   if (sheet.getName() !== SHEET_NAME) return;
@@ -81,7 +96,6 @@ function onEdit(e) {
   if (ticker) {
     setRowFormulas(sheet, row);
   } else {
-    // Si borraron el ticker, limpiar la fila
     sheet.getRange(row, COL_PDH).clearContent();
     sheet.getRange(row, COL_PDL).clearContent();
     sheet.getRange(row, COL_PRICE).clearContent();
@@ -101,23 +115,29 @@ function waitForValue(sheet, row, col, maxWaitMs) {
   return null;
 }
 
-// ── Run: lee valores actuales y evalúa señales ───────────────
+// ── Run: obtiene precio real-time y evalúa señales ───────────
 function runNow() {
   const ss      = SpreadsheetApp.getActiveSpreadsheet();
   const sheet   = ss.getSheetByName(SHEET_NAME);
   const lastRow = sheet.getLastRow();
+
+  if (FINNHUB_API_KEY === "TU_API_KEY_ACÁ") {
+    SpreadsheetApp.getUi().alert("⚠️ Antes de continuar, pegá tu API key de Finnhub en la línea:\nconst FINNHUB_API_KEY = \"TU_API_KEY_ACÁ\"");
+    return;
+  }
+
   if (lastRow < 2) {
     ss.toast("No hay tickers en la columna A.", "Market Tracker", 5);
     return;
   }
 
-  // Asegurar que las fórmulas estén puestas en todas las filas con tickers
+  // Asegurar fórmulas PDH/PDL en todas las filas
   for (let row = 2; row <= lastRow; row++) {
     const ticker = sheet.getRange(row, COL_TICKER).getValue().toString().trim();
     if (ticker) setRowFormulas(sheet, row);
   }
 
-  ss.toast("Esperando datos de GOOGLEFINANCE…", "Market Tracker", 10);
+  ss.toast("Cargando datos…", "Market Tracker", 30);
   SpreadsheetApp.flush();
   Utilities.sleep(3000);
 
@@ -133,17 +153,23 @@ function runNow() {
              .setHorizontalAlignment("center").setBackground(null);
     SpreadsheetApp.flush();
 
-    // Esperar hasta 12 segundos por cada valor de GOOGLEFINANCE
-    const pdh   = waitForValue(sheet, sheetRow, COL_PDH,   12000);
-    const pdl   = waitForValue(sheet, sheetRow, COL_PDL,   12000);
-    const price = waitForValue(sheet, sheetRow, COL_PRICE, 12000);
-    const pmh   = parseFloat(sheet.getRange(sheetRow, COL_PMH).getValue());
-    const pml   = parseFloat(sheet.getRange(sheetRow, COL_PML).getValue());
+    // PDH/PDL desde GOOGLEFINANCE (delay no importa, son datos del día anterior)
+    const pdh = waitForValue(sheet, sheetRow, COL_PDH, 12000);
+    const pdl = waitForValue(sheet, sheetRow, COL_PDL, 12000);
+
+    // Precio real-time desde Finnhub
+    const price = fetchFinnhubPrice(ticker);
+    if (price !== null) {
+      sheet.getRange(sheetRow, COL_PRICE).setValue(price);
+    }
+
+    const pmh = parseFloat(sheet.getRange(sheetRow, COL_PMH).getValue());
+    const pml = parseFloat(sheet.getRange(sheetRow, COL_PML).getValue());
 
     if (pdh === null || pdl === null || price === null) {
       arrowCell.setValue("N/A").setFontColor("#F44336").setFontSize(12)
                .setHorizontalAlignment("center").setBackground(null);
-      Logger.log(`${ticker}: GOOGLEFINANCE no resolvió — pdh=${pdh} pdl=${pdl} price=${price}`);
+      Logger.log(`${ticker}: sin datos — pdh=${pdh} pdl=${pdl} price=${price}`);
       continue;
     }
 
@@ -164,6 +190,7 @@ function runNow() {
     }
 
     updated++;
+    Utilities.sleep(200); // respetar límite de 60 req/min de Finnhub
   }
 
   ss.toast(`${updated} ticker(s) actualizados ✓`, "Market Tracker", 5);
