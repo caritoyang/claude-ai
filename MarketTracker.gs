@@ -30,7 +30,11 @@ function setRowFormulas(sheet, row) {
 
 // ── Setup: encabezados + fórmulas para todos los tickers ─────
 function setupHeaders() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+
+  // Forzar recálculo cada minuto para que GOOGLEFINANCE se actualice solo
+  ss.setRecalculation(SpreadsheetApp.RecalculationInterval.MINUTE);
 
   // Encabezados
   const headers = ["Ticker", "Signal", "PDH", "PDL", "PMH ✍", "PML ✍", "Price"];
