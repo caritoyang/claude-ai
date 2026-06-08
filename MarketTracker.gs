@@ -38,39 +38,50 @@ function fetchFinnhubPrice(ticker) {
   }
 }
 
-// ── PMH y PML desde velas de 1 min del pre-market ────────────
+// ── PMH y PML desde Yahoo Finance (pre-market gratis) ────────
 function fetchPreMarketLevels(ticker) {
-  const now = new Date();
-
-  // Timestamp de medianoche ET del día actual
-  const etDateStr  = Utilities.formatDate(now, "America/New_York", "yyyy-MM-dd");
-  const offsetStr  = Utilities.formatDate(now, "America/New_York", "Z"); // ej: "-0400"
-  const sign       = offsetStr[0] === "-" ? -1 : 1;
-  const offsetMins = sign * (parseInt(offsetStr.slice(1, 3)) * 60 + parseInt(offsetStr.slice(3, 5)));
-  const etMidnight = new Date(etDateStr + "T00:00:00Z").getTime() - offsetMins * 60000;
-
-  // Pre-market: 4:00 AM a 9:29 AM ET
-  const from = Math.floor((etMidnight + 4 * 3600000) / 1000);
-  const to   = Math.floor((etMidnight + 9 * 3600000 + 29 * 60000) / 1000);
-
-  const url = `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(ticker)}&resolution=1&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`;
+  // Velas de 1 min del día con pre/post market incluido
+  const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1m&range=1d&includePrePost=true`;
+  const headers = { "User-Agent": "Mozilla/5.0" };
   try {
-    const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true, headers });
     if (resp.getResponseCode() !== 200) {
-      Logger.log(`[${ticker}] candles HTTP ${resp.getResponseCode()}`);
+      Logger.log(`[${ticker}] Yahoo candles HTTP ${resp.getResponseCode()}`);
       return null;
     }
-    const data = JSON.parse(resp.getContentText());
-    if (data.s !== "ok" || !data.h || data.h.length === 0) {
-      Logger.log(`[${ticker}] sin velas pre-market (s=${data.s})`);
+    const json   = JSON.parse(resp.getContentText());
+    const result = json.chart.result[0];
+    const quotes = result.indicators.quote[0];
+    const timestamps = result.timestamp;
+
+    // Filtrar solo velas del pre-market: antes de las 9:30 AM ET (13:30 UTC en EDT)
+    const offsetStr  = Utilities.formatDate(new Date(), "America/New_York", "Z");
+    const sign       = offsetStr[0] === "-" ? -1 : 1;
+    const offsetMins = sign * (parseInt(offsetStr.slice(1,3)) * 60 + parseInt(offsetStr.slice(3,5)));
+    const etDateStr  = Utilities.formatDate(new Date(), "America/New_York", "yyyy-MM-dd");
+    const etMidnight = new Date(etDateStr + "T00:00:00Z").getTime() - offsetMins * 60000;
+    const preStart   = (etMidnight + 4 * 3600000) / 1000;   // 4:00 AM ET
+    const preEnd     = (etMidnight + 9 * 3600000 + 30 * 60000) / 1000; // 9:30 AM ET
+
+    const highs = [], lows = [];
+    timestamps.forEach((ts, i) => {
+      if (ts >= preStart && ts < preEnd && quotes.high[i] !== null && quotes.low[i] !== null) {
+        highs.push(quotes.high[i]);
+        lows.push(quotes.low[i]);
+      }
+    });
+
+    if (highs.length === 0) {
+      Logger.log(`[${ticker}] sin velas pre-market en Yahoo`);
       return null;
     }
-    const pmh = Math.max(...data.h);
-    const pml = Math.min(...data.l);
-    Logger.log(`[${ticker}] PMH=${pmh} PML=${pml} (${data.h.length} velas)`);
+
+    const pmh = Math.max(...highs);
+    const pml = Math.min(...lows);
+    Logger.log(`[${ticker}] PMH=${pmh} PML=${pml} (${highs.length} velas)`);
     return { pmh, pml };
   } catch (e) {
-    Logger.log(`[${ticker}] candles error: ${e}`);
+    Logger.log(`[${ticker}] Yahoo candles error: ${e}`);
     return null;
   }
 }
